@@ -410,7 +410,6 @@ class DLRM_Net(nn.Module):
             # The embeddings are represented as tall matrices, with sum
             # happening vertically across 0 axis, resulting in a row vector
             # E = emb_l[k]
-
             if v_W_l[k] is not None:
                 per_sample_weights = v_W_l[k].gather(0, sparse_index_group_batch)
             else:
@@ -951,11 +950,12 @@ def run():
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--memory-map", action="store_true", default=False)
     # training
+    parser.add_argument("--data_path", type=str, default="/gallery_tate/julian.paquerot/homeworks/advanced_computer_architecture/practice/data_movie_lense")  # Hardcorded for now TODO change this
     parser.add_argument("--mini-batch-size", type=int, default=1)
     parser.add_argument("--nepochs", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=0.01)
     parser.add_argument("--print-precision", type=int, default=5)
-    parser.add_argument("--numpy-rand-seed", type=int, default=123)
+    parser.add_argument("--numpy-rand-seed", type=int, default=122)
     parser.add_argument("--sync-dense-params", type=bool, default=True)
     parser.add_argument("--optimizer", type=str, default="sgd")
     parser.add_argument(
@@ -1090,12 +1090,15 @@ def run():
         mlperf_logger.barrier()
 
     if args.data_generation == "dataset":
-        train_data, train_ld, test_data, test_ld = dp.make_criteo_data_and_loaders(args)
-        table_feature_map = {idx: idx for idx in range(len(train_data.counts))}
+        train_data, train_ld, test_data, test_ld = dp.make_movie_lense_data_and_loaders(args)
+        # table_feature_map = {idx: idx for idx in range(len(train_data.counts))}
         nbatches = args.num_batches if args.num_batches > 0 else len(train_ld)
         nbatches_test = len(test_ld)
 
-        ln_emb = train_data.counts
+        # ln_emb = train_data.counts
+        ln_emb = np.fromstring(args.arch_embedding_size, dtype=int, sep="-")
+        m_den = ln_bot[0]
+        
         # enforce maximum limit on number of vectors per embedding
         if args.max_ind_range > 0:
             ln_emb = np.array(
@@ -1108,9 +1111,10 @@ def run():
             )
         else:
             ln_emb = np.array(ln_emb)
-        m_den = train_data.m_den
-        ln_bot[0] = m_den
+        # m_den = train_data.m_den
+        # ln_bot[0] = m_den
     else:
+        
         # input and target at random
         ln_emb = np.fromstring(args.arch_embedding_size, dtype=int, sep="-")
         m_den = ln_bot[0]
@@ -1262,6 +1266,7 @@ def run():
     # the weights we need to start from the same random seed.
     # np.random.seed(args.numpy_rand_seed)
     global dlrm
+    # import ipdb; ipdb.set_trace(context=10)
     dlrm = DLRM_Net(
         m_spa,
         ln_emb,

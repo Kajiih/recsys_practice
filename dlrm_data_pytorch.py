@@ -15,14 +15,17 @@
 #    ii) Criteo Terabyte Dataset
 #    https://labs.criteo.com/2013/12/download-terabyte-click-logs
 
-
+#%% Imports
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 import bisect
 import collections
 import sys
+import os
 from collections import deque
-
+import pickle as pkl
+import itertools
+import random as rnd
 # others
 from os import path
 
@@ -39,6 +42,7 @@ import torch
 from numpy import random as ra
 from torch.utils.data import Dataset, RandomSampler
 
+#%%
 
 # Kaggle Display Advertising Challenge Dataset
 # dataset (str): name of dataset (Kaggle or Terabyte)
@@ -566,7 +570,6 @@ def make_criteo_data_and_loaders(args, offset_to_length_converter=False):
         )
 
     return train_data, train_loader, test_data, test_loader
-
 
 # uniform ditribution (input data)
 class RandomDataset(Dataset):
@@ -1285,3 +1288,282 @@ if __name__ == "__main__":
     #     line_accesses, list_sd, cumm_sd, len(trace), args.trace_enable_padding
     # )
     write_trace_to_file(args.synthetic_file, synthetic_trace)
+
+# %% Movie Lense
+class MovieLenseDataset(Dataset):
+    def __init__(
+        self,
+        split,
+        mini_batch_size,
+        data_path,
+        seed=0
+    ):
+        # Load pickled data
+        with open(os.path.join(data_path, "movies_dict.pkl"), "rb") as f:
+            movie_info_dict = pkl.load(f)
+        if split=='train':
+            with open(os.path.join(data_path, "train_ratings_list.pkl"), "rb") as f:
+                ratings_list = pkl.load(f)  # list of dicts of user_id, movie_id, rating
+        elif split=='test':
+            with open(os.path.join(data_path, "test_ratings_list.pkl"), "rb") as f:
+                ratings_list = pkl.load(f)  # list of dicts of user_id, movie_id, rating
+        else:
+            raise ValueError("Split should be train or test")
+        # We don't use the timestamps and tags for now
+        
+        # Compute data size
+        data_size = len(ratings_list)
+        self.data_size = data_size
+        
+        # Compute number of batches
+        nbatches = int(np.ceil((data_size * 1.0) / mini_batch_size))
+        
+        self.num_batches = nbatches
+        self.mini_batch_size = mini_batch_size
+        
+        self.seed = seed
+        ra.seed(self.seed)
+        self.movie_info_dict = movie_info_dict
+        self.ratings_list = ratings_list
+        
+    
+    def __getitem__(self, index):
+        
+        #  Taken the other classes
+        if isinstance(index, slice):
+            return [self[idx] for idx in range(index.start or 0, index.stop or len(self), index.step or 1)]
+        
+        # Compute the size of the current batch
+        n = min(self.mini_batch_size, self.data_size - (index * self.mini_batch_size))
+        
+        ratings_dicts_batch = self.ratings_list[index * self.mini_batch_size : index  * self.mini_batch_size + n]
+        T = [[ratings_dict['rating']] for ratings_dict in ratings_dicts_batch]
+        T = torch.tensor(T, dtype=torch.float32)
+        
+        # Get dense features (timestamp)
+        X = [[ratings_dict['timestamp']] for ratings_dict in ratings_dicts_batch]
+        # import ipdb; ipdb.set_trace()  #TODO remove
+        X = torch.tensor(X)
+        
+        # Get sparse features (user_id, movie_id and genres)
+        lS_offsets = []
+        lS_indices = []
+        # Add user_id features
+        offsets = np.arange(n)
+        lS_offsets.append(torch.tensor(offsets))
+        indices = [ratings_dict['user_id'] - 1 for ratings_dict in ratings_dicts_batch]
+        lS_indices.append(torch.tensor(indices))
+        
+        # Add movie_id features
+        offsets = np.arange(n)
+        lS_offsets.append(torch.tensor(offsets))
+        indices = [ratings_dict['movie_id'] - 1 for ratings_dict in ratings_dicts_batch]
+        lS_indices.append(torch.tensor(indices))
+        # Add genres features
+        indices = [self.movie_info_dict[ratings_dict['movie_id']]['genres'] for ratings_dict in ratings_dicts_batch]
+        offsets = [0] + [len(genres) for genres in indices]
+        offsets = np.cumsum(offsets)[:-1]
+        indices = [genre_id for genre_id_list in indices for genre_id in genre_id_list]  # flatten the list
+        lS_offsets.append(torch.tensor(offsets))
+        lS_indices.append(torch.tensor(indices))
+        
+        return (X, lS_offsets, lS_indices, T)
+    
+    def __len__(self):
+        # return self.mini_batch_size  # following the slides
+        return self.num_batches  # following the other classes
+
+def collate_wrapper_movie_lense_offset(list_of_tuples):
+    # where each tuple is (X, lS_o, lS_i, T)
+    (X, lS_o, lS_i, T) = list_of_tuples[0]
+    return (X, torch.stack(lS_o), lS_i, T)
+    # X = [t[0] for t in list_of_tuples]
+    # lS_o = [torch.stack(t[1]) for t in list_of_tuples]
+    # lS_i = [t[2] for t in list_of_tuples]
+    # T = [t[3] for t in list_of_tuples]
+    # return X, lS_o, lS_i, T
+    
+    
+def make_movie_lense_data_and_loaders(
+    args,
+    offset_to_length_converter=False
+    ):
+
+    train_data = MovieLenseDataset(
+        split='train',
+        mini_batch_size=args.mini_batch_size,
+        data_path=args.data_path,
+        seed=args.numpy_rand_seed
+    )
+
+    test_data = MovieLenseDataset(
+        split='test',
+        mini_batch_size=args.mini_batch_size,
+        data_path=args.data_path,
+        seed=args.numpy_rand_seed
+    )
+
+    collate_wrapper_movie_lense = collate_wrapper_movie_lense_offset
+    if offset_to_length_converter:
+        raise NotImplementedError
+
+    train_loader = torch.utils.data.DataLoader(
+        train_data,
+        batch_size=1,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate_wrapper_movie_lense,  # TODO: verify that it works
+        pin_memory=False,
+        drop_last=False,  # True
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_data,
+        batch_size=1,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate_wrapper_movie_lense,  # TODO: verify that it works
+        pin_memory=False,
+        drop_last=False,  # True
+    )
+    return train_data, train_loader, test_data, test_loader
+
+
+# %% Movie Lense
+class NewCriteoDataset(Dataset):
+    def __init__(
+        self,
+        split,
+        mini_batch_size,
+        data_path,
+        seed=0
+    ):
+        # Load pickled data
+        with open(os.path.join(data_path, "movies_dict.pkl"), "rb") as f:
+            movie_info_dict = pkl.load(f)
+        if split=='train':
+            with open(os.path.join(data_path, "train_ratings_list.pkl"), "rb") as f:
+                ratings_list = pkl.load(f)  # list of dicts of user_id, movie_id, rating
+        elif split=='test':
+            with open(os.path.join(data_path, "test_ratings_list.pkl"), "rb") as f:
+                ratings_list = pkl.load(f)  # list of dicts of user_id, movie_id, rating
+        else:
+            raise ValueError("Split should be train or test")
+        
+        # Compute data size
+        data_size = len(ratings_list)
+        self.data_size = data_size
+        
+        # Compute number of batches
+        nbatches = int(np.ceil((data_size * 1.0) / mini_batch_size))
+        
+        self.num_batches = nbatches
+        self.mini_batch_size = mini_batch_size
+        
+        self.seed = seed
+        ra.seed(self.seed)
+        self.movie_info_dict = movie_info_dict
+        self.ratings_list = ratings_list
+        
+    
+    def __getitem__(self, index):
+        
+        #  Taken the other classes
+        if isinstance(index, slice):
+            return [self[idx] for idx in range(index.start or 0, index.stop or len(self), index.step or 1)]
+        
+        # Compute the size of the current batch
+        n = min(self.mini_batch_size, self.data_size - (index * self.mini_batch_size))
+        
+        ratings_dicts_batch = self.ratings_list[index * self.mini_batch_size : index  * self.mini_batch_size + n]
+        T = [[ratings_dict['rating']] for ratings_dict in ratings_dicts_batch]
+        T = torch.tensor(T, dtype=torch.float32)
+        
+        # Get dense features (timestamp)
+        X = [[ratings_dict['timestamp']] for ratings_dict in ratings_dicts_batch]
+        # import ipdb; ipdb.set_trace()  #TODO remove
+        X = torch.tensor(X)
+        
+        # Get sparse features (user_id, movie_id and genres)
+        lS_offsets = []
+        lS_indices = []
+        # Add user_id features
+        offsets = np.arange(n)
+        lS_offsets.append(torch.tensor(offsets))
+        indices = [ratings_dict['user_id'] - 1 for ratings_dict in ratings_dicts_batch]
+        lS_indices.append(torch.tensor(indices))
+        
+        # Add movie_id features
+        offsets = np.arange(n)
+        lS_offsets.append(torch.tensor(offsets))
+        indices = [ratings_dict['movie_id'] - 1 for ratings_dict in ratings_dicts_batch]
+        lS_indices.append(torch.tensor(indices))
+        # Add genres features
+        indices = [self.movie_info_dict[ratings_dict['movie_id']]['genres'] for ratings_dict in ratings_dicts_batch]
+        offsets = [0] + [len(genres) for genres in indices]
+        offsets = np.cumsum(offsets)[:-1]
+        indices = [genre_id for genre_id_list in indices for genre_id in genre_id_list]  # flatten the list
+        lS_offsets.append(torch.tensor(offsets))
+        lS_indices.append(torch.tensor(indices))
+        
+        return (X, lS_offsets, lS_indices, T)
+    
+    def __len__(self):
+        # return self.mini_batch_size  # following the slides
+        return self.num_batches  # following the other classes
+
+def collate_wrapper_movie_lense_offset(list_of_tuples):
+    # where each tuple is (X, lS_o, lS_i, T)
+    (X, lS_o, lS_i, T) = list_of_tuples[0]
+    return (X, torch.stack(lS_o), lS_i, T)
+    # X = [t[0] for t in list_of_tuples]
+    # lS_o = [torch.stack(t[1]) for t in list_of_tuples]
+    # lS_i = [t[2] for t in list_of_tuples]
+    # T = [t[3] for t in list_of_tuples]
+    # return X, lS_o, lS_i, T
+    
+    
+def make_movie_lense_data_and_loaders(
+    args,
+    offset_to_length_converter=False
+    ):
+
+    train_data = MovieLenseDataset(
+        split='train',
+        mini_batch_size=args.mini_batch_size,
+        data_path=args.data_path,
+        seed=args.numpy_rand_seed
+    )
+
+    test_data = MovieLenseDataset(
+        split='test',
+        mini_batch_size=args.mini_batch_size,
+        data_path=args.data_path,
+        seed=args.numpy_rand_seed
+    )
+
+    collate_wrapper_movie_lense = collate_wrapper_movie_lense_offset
+    if offset_to_length_converter:
+        raise NotImplementedError
+
+    train_loader = torch.utils.data.DataLoader(
+        train_data,
+        batch_size=1,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate_wrapper_movie_lense,  # TODO: verify that it works
+        pin_memory=False,
+        drop_last=False,  # True
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_data,
+        batch_size=1,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate_wrapper_movie_lense,  # TODO: verify that it works
+        pin_memory=False,
+        drop_last=False,  # True
+    )
+    return train_data, train_loader, test_data, test_loader
+# %%
