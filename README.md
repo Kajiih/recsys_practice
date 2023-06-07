@@ -3,7 +3,9 @@
 # Command arguments:
 
 arch-embedding-size: number of embedding tables and the row size of each table, the number of table is the number of sparse features and each row size should be the number of categories of the corresponding sparse feature: "nb_usr-nb_movie-nb_genre"
+
 arch-mlp-bot: number of neurones in each layer of the bottom MLP, first number is the number of dense features, last number is the dimension of the embedding tables
+
 arch-spase-feature-size: number of column in the embedding tables (embedding dimension)
 
 # Command example
