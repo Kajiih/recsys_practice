@@ -1,3 +1,18 @@
+## Some pracctical info
+
+# Command arguments:
+
+arch-embedding-size: number of embedding tables and the row size of each table, the number of table is the number of sparse features and each row size should be the number of categories of the corresponding sparse feature: "nb_usr-nb_movie-nb_genre"
+arch-mlp-bot: number of neurones in each layer of the bottom MLP, first number is the number of dense features, last number is the dimension of the embedding tables
+arch-spase-feature-size: number of column in the embedding tables (embedding dimension)
+
+# Command example
+```
+python dlrm_s_pytorch.py --arch-embedding-size="162541-209171-20" --arch-mlp-bot="1-64-128" --arch-mlp-top="128-32-8-4-1" --data-generation dataset --mini-batch-size=10000 --nepochs=10 --arch-sparse-feature-size=128 --use-gpu
+```
+
+
+# Original Readme:
 Deep Learning Recommendation Model for Personalization and Recommendation Systems:
 =================================================================================
 *Copyright (c) Facebook, Inc. and its affiliates.*
